@@ -5,6 +5,15 @@ import QuotioDomain
 
 @MainActor
 final class ConnectionPresentationTests: XCTestCase {
+    func testOpenCodeGoUsesFirstClassAPIKeyPresentation() {
+        XCTAssertEqual(QuotaProvider.openCodeGo.rawValue, "opencodego")
+        XCTAssertEqual(QuotaProvider.openCodeGo.displayName, "OpenCode Go")
+        XCTAssertEqual(QuotaProvider.openCodeGo.logoAssetName, "opencode")
+        XCTAssertEqual(QuotaProvider.openCodeGo.menuBarSymbol, "GO")
+        XCTAssertTrue(QuotaProvider.openCodeGo.usesAPIKeyAuth)
+        XCTAssertTrue(QuotaProvider.allCases.contains(.openCodeGo))
+    }
+
     func testNavigationDoesNotLeakProviderSelectionIntoOtherPages() {
         let navigation = NavigationScreenModel()
         XCTAssertEqual(navigation.currentPage, .providers)

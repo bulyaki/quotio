@@ -704,6 +704,13 @@ impl Document {
     }
 }
 impl Document {
+    pub(crate) fn has_custom_key_selectors(&self) -> bool {
+        self.accounts.iter().any(|a| {
+            matches!(&a.credential,
+            Credential::QuotioCustomProvider { source } if source.key_id.is_some())
+        })
+    }
+
     pub(crate) fn has_config_dirs(&self) -> bool {
         self.accounts
             .iter()

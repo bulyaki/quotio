@@ -865,3 +865,23 @@ Release automation for GitHub Releases, npm (`quotio`) and Homebrew is described
 [release channels](docs/release-channels.md). Configure signing, npm trust and tap
 access before triggering publication; the presence of the workflows does not mean
 packages have already been published.
+
+### Existing macOS OpenCode Go providers
+
+OpenCode Go supports the same read-only Quotio custom-provider discovery as
+ClinePass. Inspect `quotio_custom_provider` sources for provider `opencodego`
+and the selected macOS preferences domain. Legacy `openai-compatibility` records
+are recognised only at `https://opencode.ai/zen/go/v1` (optional trailing slash).
+OpenCode Zen and arbitrary compatible URLs are excluded.
+
+Each saved API-key ID produces a separate discovery reference and quota account,
+so multiple Go subscriptions remain independent when keys are reordered or rotated.
+Credentials stay in macOS preferences; refresh re-reads the selected key and uses
+the fixed official Go usage endpoint. Disabled, deleted, duplicate or invalid
+sources fail explicitly. Existing ClinePass and Z.ai references are unchanged.
+The production macOS app migrates enabled saved Go providers on launch, once per
+key ID. Failed imports are retried; removing a migrated account does not recreate
+it on later launches. Beta and development apps do not import production settings.
+Registering a per-key reference upgrades the account vault to format 23; older
+CLI builds cannot read that vault. New Go accounts can also be added directly
+with the API-key connection flow in Settings, like ClinePass.

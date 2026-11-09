@@ -19,8 +19,9 @@ public struct QuotaProvider: RawRepresentable, CaseIterable, Codable, Hashable, 
     public static let trae = Self(rawValue: "trae")!
     public static let glm = Self(rawValue: "zai")!
     public static let warp = Self(rawValue: "warp")!
+    public static let openCodeGo = Self(rawValue: "opencodego")!
     public static let clinePass = Self(rawValue: "clinepass")!
-    public static let allCases: [Self] = [.claude, .codex, .qwen, .iflow, .antigravity, .vertex, .kiro, .copilot, .cursor, .factoryDroid, .devin, .grok, .openRouter, .amp, .trae, .glm, .warp, .clinePass]
+    public static let allCases: [Self] = [.claude, .codex, .qwen, .iflow, .antigravity, .vertex, .kiro, .copilot, .cursor, .factoryDroid, .devin, .grok, .openRouter, .amp, .trae, .glm, .warp, .clinePass, .openCodeGo]
 
     public init?(rawValue: String) {
         guard !rawValue.isEmpty, rawValue.utf8.count <= 128,
@@ -63,7 +64,7 @@ public struct QuotaProvider: RawRepresentable, CaseIterable, Codable, Hashable, 
 
     public var supportsManualAuth: Bool {
         switch self {
-        case .cursor, .trae, .devin, .grok, .glm, .clinePass:
+        case .cursor, .trae, .devin, .grok, .glm, .clinePass, .openCodeGo:
             false
         default:
             true
@@ -76,7 +77,7 @@ public struct QuotaProvider: RawRepresentable, CaseIterable, Codable, Hashable, 
 
     public var usesAPIKeyAuth: Bool {
         switch self {
-        case .glm, .warp, .clinePass, .factoryDroid, .openRouter, .amp:
+        case .glm, .warp, .clinePass, .openCodeGo, .factoryDroid, .openRouter, .amp:
             true
         default:
             false

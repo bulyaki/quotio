@@ -13,6 +13,7 @@ public actor QuotioCLILegacyAccountMigration {
     private let codexKeychain: (any ExternalCredentialReading)?
     private let identity: RuntimeIdentity
     private let importAccount: @Sendable (Account, StoredCredential, Bool) async throws -> Void
+    private let importCustomSource: (@Sendable (String, String) async throws -> Void)?
     private let completedKey = "quotio.cli.migratedMonitorAccounts.v1"
 
     public init(
@@ -21,6 +22,7 @@ public actor QuotioCLILegacyAccountMigration {
         defaults: UserDefaults = .standard,
         codexKeychain: (any ExternalCredentialReading)? = nil,
         identity: RuntimeIdentity = .production,
+        importCustomSource: (@Sendable (String, String) async throws -> Void)? = nil,
         importAccount: @escaping @Sendable (Account, StoredCredential, Bool) async throws -> Void
     ) {
         self.metadataURL = metadataURL ?? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
@@ -29,6 +31,7 @@ public actor QuotioCLILegacyAccountMigration {
         self.defaults = defaults
         self.codexKeychain = codexKeychain
         self.identity = identity
+        self.importCustomSource = importCustomSource
         self.importAccount = importAccount
     }
 
@@ -66,6 +69,31 @@ public actor QuotioCLILegacyAccountMigration {
                 result.pendingCount += 1
             }
         }
+        // Keep borrowed keys in preferences. Register each stable key ID only once,
+        // so removing an account later does not silently recreate it on launch.
+        if let importCustomSource {
+            do {
+                let providers = try UserDefaultsCustomProviderRepository(defaults: defaults).load()
+                for provider in providers where provider.isEnabled && Self.isOpenCodeGo(provider) {
+                    for key in provider.apiKeys {
+                        let recordID = provider.id.uuidString.lowercased()
+                        let keyID = key.id.uuidString.lowercased()
+                        let marker = "opencodego-custom.v1/" + recordID + "/" + keyID
+                        guard !completed.contains(marker) else { continue }
+                        do {
+                            try await importCustomSource(recordID, keyID)
+                            completed.insert(marker)
+                            defaults.set(completed.sorted(), forKey: completedKey)
+                            result.migratedCount += 1
+                        } catch {
+                            result.pendingCount += 1
+                        }
+                    }
+                }
+            } catch {
+                result.metadataUnreadable = true
+            }
+        }
         let sourceMarker = "codex-auth-keychain.v1"
         if !completed.contains(sourceMarker), let codexKeychain {
             let previousAccount = metadata.accounts.first {
@@ -93,6 +121,15 @@ public actor QuotioCLILegacyAccountMigration {
             }
         }
         return result
+    }
+
+    private static func isOpenCodeGo(_ provider: CustomProvider) -> Bool {
+        guard provider.type == .openaiCompatibility,
+              let url = URLComponents(string: provider.baseURL) else { return false }
+        return url.scheme == "https" && url.host == "opencode.ai"
+            && (url.port == nil || url.port == 443) && url.user == nil && url.password == nil
+            && url.query == nil && url.fragment == nil
+            && ["/zen/go/v1", "/zen/go/v1/"].contains(url.path)
     }
 
     private static func codexCredential(_ data: Data) throws -> (String, StoredCredential) {

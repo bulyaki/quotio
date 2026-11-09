@@ -58,7 +58,7 @@ all providers. Windows/Linux runtime checks are deferred.
 | moonshot | api_key | cli_proxy_auth_file (borrowed_proxy) | macos, linux, windows |
 | neuralwatt | api_key | — | macos, linux, windows |
 | openai | api_key | — | macos, linux, windows |
-| opencodego | api_key | — | macos, linux, windows |
+| opencodego | api_key | quotio_custom_provider (borrowed_proxy) | macos, linux, windows |
 | poe | api_key | cli_proxy_auth_file (borrowed_proxy) | macos, linux, windows |
 | sub2api | api_key | — | macos, linux, windows |
 | venice | api_key | cli_proxy_auth_file (borrowed_proxy) | macos, linux, windows |

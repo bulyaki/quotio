@@ -181,6 +181,9 @@ enum CompositionRoot {
             ),
             codexKeychain: ExternalKeychainCredentialReader(),
             identity: identity,
+            importCustomSource: { recordID, keyID in
+                try await quotioBackend.importLegacyOpenCodeGoSource(recordID: recordID, keyID: keyID)
+            },
             importAccount: { account, credential, disabled in
                 try await quotioBackend.importLegacyAccount(account, credential: credential, disabled: disabled)
             }

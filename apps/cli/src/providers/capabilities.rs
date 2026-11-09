@@ -300,7 +300,7 @@ pub fn capability(provider: Provider) -> ProviderCapability {
         operations.push(Operation::StartOAuth);
     }
     let mut source_references =
-        if matches!(provider, Provider::Catalog("clinepass") | Provider::Zai) {
+        if matches!(provider, Provider::Catalog("clinepass" | "opencodego") | Provider::Zai) {
             vec![SourceCapability {
                 kind: "quotio_custom_provider",
                 platforms: vec!["macos"],

@@ -17,7 +17,7 @@ fn has_factory_selectors(document: &Document) -> bool {
 }
 
 /// Highest document format this build reads and writes.
-const SUPPORTED_FORMAT: u8 = 22;
+const SUPPORTED_FORMAT: u8 = 23;
 
 /// Lenient view of a document that reads only its format, so a document from a
 /// newer Quotio is told apart from a corrupt one before the strict parse.
@@ -404,6 +404,7 @@ impl Vault {
                 let doc: Document =
                     serde_json::from_slice(&bytes).map_err(|_| AccountError::Corrupt)?;
                 if !matches!(doc.version, 1..=SUPPORTED_FORMAT)
+                    || (doc.version < 23 && doc.has_custom_key_selectors())
                     || (doc.version < 22 && doc.has_config_dirs())
                     || (doc.version < 21
                         && doc
@@ -673,6 +674,10 @@ impl Transaction {
         // Format-21 readers reject a source's config directory as an unknown field.
         if self.document.has_config_dirs() {
             self.document.version = self.document.version.max(22);
+        }
+        // Older readers cannot safely resolve individual keys in a provider group.
+        if self.document.has_custom_key_selectors() {
+            self.document.version = self.document.version.max(23);
         }
         let bytes = serde_json::to_vec(&self.document).map_err(|_| AccountError::Corrupt)?;
         if bytes.len() > 1024 * 1024 {
@@ -977,6 +982,36 @@ pub(crate) mod tests {
         assert!(matches!(vault.begin(), Err(AccountError::Corrupt)));
         std::fs::remove_dir_all(dir).unwrap();
     }
+    #[test]
+    fn custom_key_selectors_require_format_twenty_three() {
+        let memory = Arc::new(Memory::default());
+        let dir = std::env::temp_dir().join(random_string().unwrap());
+        let vault = Vault::new(memory.clone(), dir.join("lock"));
+        let source = crate::accounts::sources::CustomProviderReference {
+            domain: crate::accounts::sources::QuotioDomain::Production,
+            record_id: "11111111-1111-1111-1111-111111111111".into(),
+            key_id: Some("22222222-2222-2222-2222-222222222222".into()),
+        };
+        let mut tx = vault.begin().unwrap();
+        tx.document
+            .add(
+                Provider::Catalog("opencodego"),
+                "Go",
+                source.identity().unwrap(),
+                crate::accounts::Credential::QuotioCustomProvider { source },
+            )
+            .unwrap();
+        tx.commit().unwrap();
+        let mut value: serde_json::Value =
+            serde_json::from_slice(&memory.read().unwrap().unwrap()).unwrap();
+        assert_eq!(value["version"], 23);
+        assert!(vault.begin().is_ok());
+        value["version"] = 22.into();
+        memory.write(&serde_json::to_vec(&value).unwrap()).unwrap();
+        assert!(matches!(vault.begin(), Err(AccountError::Corrupt)));
+        std::fs::remove_dir_all(dir).ok();
+    }
+
     #[test]
     fn config_dir_sources_require_format_twenty_two() {
         let memory = Arc::new(Memory::default());

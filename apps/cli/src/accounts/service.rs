@@ -3801,6 +3801,7 @@ mod tests {
             let source = super::super::sources::CustomProviderReference {
                 domain: super::super::sources::QuotioDomain::Production,
                 record_id: "01234567-89ab-cdef-0123-456789abcdef".into(),
+                key_id: None,
             };
             let mut tx = vault.begin().unwrap();
             let id = tx

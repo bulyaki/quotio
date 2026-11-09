@@ -992,7 +992,8 @@ impl Credential {
             Self::QuotioCustomProvider { source }
                 if matches!(
                     provider,
-                    crate::cli::Provider::Catalog("clinepass") | crate::cli::Provider::Zai
+                    crate::cli::Provider::Catalog("clinepass" | "opencodego")
+                        | crate::cli::Provider::Zai
                 ) =>
             {
                 let resolved = source.resolve().await?;
@@ -1070,6 +1071,8 @@ impl QuotioDomain {
 pub struct CustomProviderReference {
     pub domain: QuotioDomain,
     pub record_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub key_id: Option<String>,
 }
 #[derive(Clone, Serialize, PartialEq, Eq)]
 pub struct Resolved {
@@ -1094,9 +1097,29 @@ struct Record {
 }
 #[derive(Deserialize)]
 struct Key {
+    id: Option<String>,
     #[serde(rename = "api-key")]
     token: String,
 }
+/// Only the official Go inference URL identifies a legacy generic provider.
+/// Names and user-controlled endpoints never choose the destination for credentials.
+pub(super) fn is_opencode_go_record(kind: &str, base_url: Option<&str>) -> bool {
+    if kind != "openai-compatibility" && kind != "opencodego" {
+        return false;
+    }
+    let Some(url) = base_url.and_then(|value| reqwest::Url::parse(value).ok()) else {
+        return false;
+    };
+    url.scheme() == "https"
+        && url.host_str() == Some("opencode.ai")
+        && url.port_or_known_default() == Some(443)
+        && url.username().is_empty()
+        && url.password().is_none()
+        && url.query().is_none()
+        && url.fragment().is_none()
+        && matches!(url.path(), "/zen/go/v1" | "/zen/go/v1/")
+}
+
 impl CustomProviderReference {
     pub fn identity(&self) -> Result<String, AccountError> {
         let id = &self.record_id;
@@ -1110,6 +1133,19 @@ impl CustomProviderReference {
             })
         {
             return Err(AccountError::Input);
+        }
+        if let Some(key_id) = &self.key_id {
+            let mut key = self.clone();
+            key.record_id = key_id.clone();
+            key.key_id = None;
+            key.identity()?;
+            let mut record = self.clone();
+            record.key_id = None;
+            return Ok(crate::cache::fingerprint(&[
+                "quotio_custom_provider_key",
+                &record.identity()?,
+                &key_id.to_ascii_lowercase(),
+            ]));
         }
         Ok(crate::cache::fingerprint(&[
             "quotio_custom_provider",
@@ -1140,7 +1176,35 @@ impl CustomProviderReference {
                 && token.len() <= 16_384
                 && !token.chars().any(char::is_control)
         };
+        if self.key_id.is_some() && !is_opencode_go_record(&record.kind, record.base_url.as_deref())
+        {
+            return Err(AccountError::Unsupported);
+        }
         let (provider, credentials) = match record.kind.as_str() {
+            kind if is_opencode_go_record(kind, record.base_url.as_deref()) => {
+                // An explicit key selector gives each saved subscription its own quota.
+                let key_id = self.key_id.as_deref().ok_or(AccountError::Input)?;
+                let mut matching = keys.iter().filter(|key| {
+                    key.id
+                        .as_deref()
+                        .is_some_and(|id| id.eq_ignore_ascii_case(key_id))
+                });
+                let key = matching.next().ok_or(AccountError::NotFound)?;
+                if matching.next().is_some() {
+                    return Err(AccountError::Corrupt);
+                }
+                let token = key.token.trim();
+                if !valid(token) {
+                    return Err(AccountError::Input);
+                }
+                (
+                    crate::cli::Provider::Catalog("opencodego"),
+                    vec![Credential::CatalogKey {
+                        token: token.into(),
+                        settings: Default::default(),
+                    }],
+                )
+            }
             "clinepass" => {
                 let token = keys.first().ok_or(AccountError::Input)?.token.trim();
                 if !valid(token) {
@@ -1689,6 +1753,7 @@ mod tests {
         CustomProviderReference {
             domain: QuotioDomain::Production,
             record_id: "01234567-89ab-cdef-0123-456789abcdef".into(),
+            key_id: None,
         }
     }
     fn records() -> serde_json::Value {
@@ -1802,6 +1867,99 @@ mod tests {
             ));
         }
     }
+    fn go_records() -> serde_json::Value {
+        serde_json::json!([{
+            "id": source().record_id, "name": "OpenCode Go", "type": "openai-compatibility",
+            "base-url": "https://opencode.ai/zen/go/v1/", "is-enabled": true,
+            "api-keys": [
+                {"id": "11111111-1111-1111-1111-111111111111", "api-key": "fixture-go-first"},
+                {"id": "22222222-2222-2222-2222-222222222222", "api-key": "fixture-go-second"}
+            ]
+        }])
+    }
+    #[test]
+    fn opencode_go_references_select_stable_keys_and_observe_rotation() {
+        let mut first = source();
+        first.key_id = Some("11111111-1111-1111-1111-111111111111".into());
+        let mut second = first.clone();
+        second.key_id = Some("22222222-2222-2222-2222-222222222222".into());
+        assert_ne!(first.identity().unwrap(), second.identity().unwrap());
+        assert_ne!(first.identity().unwrap(), source().identity().unwrap());
+        let mut records = go_records();
+        let resolve = |source: &CustomProviderReference, records: &serde_json::Value| {
+            source.parse(&serde_json::to_vec(records).unwrap()).unwrap()
+        };
+        let value = resolve(&second, &records);
+        assert_eq!(value.provider, crate::cli::Provider::Catalog("opencodego"));
+        assert!(
+            matches!(&value.credentials[0], Credential::CatalogKey { token, .. } if token == "fixture-go-second")
+        );
+        records[0]["api-keys"].as_array_mut().unwrap().reverse();
+        assert!(resolve(&second, &records) == value);
+        records[0]["api-keys"][0]["api-key"] = "fixture-rotated".into();
+        assert!(
+            matches!(&resolve(&second, &records).credentials[0], Credential::CatalogKey { token, .. } if token == "fixture-rotated")
+        );
+        let encoded = serde_json::to_string(&second).unwrap();
+        assert!(!encoded.contains("fixture"));
+        assert_eq!(
+            serde_json::from_str::<CustomProviderReference>(&encoded)
+                .unwrap()
+                .identity()
+                .unwrap(),
+            second.identity().unwrap()
+        );
+        records[0]["api-keys"].as_array_mut().unwrap().remove(0);
+        assert!(matches!(
+            second.parse(&serde_json::to_vec(&records).unwrap()),
+            Err(AccountError::NotFound)
+        ));
+        assert!(resolve(&first, &records).credentials.len() == 1);
+    }
+    #[test]
+    fn opencode_go_rejects_unsafe_urls_missing_selectors_and_duplicate_keys() {
+        let mut selected = source();
+        selected.key_id = Some("11111111-1111-1111-1111-111111111111".into());
+        let bytes = serde_json::to_vec(&go_records()).unwrap();
+        assert!(matches!(source().parse(&bytes), Err(AccountError::Input)));
+        for url in [
+            "https://custom.example/zen/go/v1/",
+            "http://opencode.ai/zen/go/v1/",
+            "https://opencode.ai/zen/v1/",
+            "https://opencode.ai:444/zen/go/v1/",
+            "https://user@opencode.ai/zen/go/v1/",
+            "https://opencode.ai/zen/go/v1/?x=y",
+            "https://opencode.ai/zen/go/v1/#x",
+        ] {
+            let mut records = go_records();
+            records[0]["base-url"] = url.into();
+            assert!(matches!(
+                selected.parse(&serde_json::to_vec(&records).unwrap()),
+                Err(AccountError::Unsupported)
+            ));
+        }
+        let mut records = go_records();
+        records[0]["api-keys"][1]["id"] = selected.key_id.clone().unwrap().into();
+        assert!(matches!(
+            selected.parse(&serde_json::to_vec(&records).unwrap()),
+            Err(AccountError::Corrupt)
+        ));
+        records = go_records();
+        records[0]["api-keys"][0]["api-key"] = "  ".into();
+        assert!(matches!(
+            selected.parse(&serde_json::to_vec(&records).unwrap()),
+            Err(AccountError::Input)
+        ));
+        records = go_records();
+        records[0]["is-enabled"] = false.into();
+        assert!(matches!(
+            selected.parse(&serde_json::to_vec(&records).unwrap()),
+            Err(AccountError::SourceDisabled)
+        ));
+        selected.key_id = Some("../../bad".into());
+        assert!(selected.identity().is_err());
+    }
+
     #[test]
     fn custom_bundle_domains_round_trip_and_preserve_alias_identity() {
         let mut source = source();

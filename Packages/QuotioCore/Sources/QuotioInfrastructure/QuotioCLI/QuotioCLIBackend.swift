@@ -446,6 +446,20 @@ public actor QuotioCLIBackend: AccountManaging, QuotaCoordinating, MonitoringSet
         try await mutate(client: client, path: target.path, method: "DELETE", body: nil)
     }
 
+    public func importLegacyOpenCodeGoSource(recordID: String, keyID: String) async throws {
+        guard let client else { throw QuotioHostClientError.disconnected }
+        let body = try JSONSerialization.data(withJSONObject: [
+            "kind": "quotio_custom_provider",
+            "source": ["domain": RuntimeIdentity.productionBundleIdentifier,
+                       "record_id": recordID, "key_id": keyID],
+        ])
+        do {
+            try await mutate(client: client, path: "v2/sources", method: "POST", body: body)
+        } catch QuotioHostClientError.response(_, "duplicate_account") {
+            // A previous launch may have committed before saving its migration marker.
+        }
+    }
+
     public func importLegacyAccount(_ account: Account, credential: StoredCredential, disabled: Bool) async throws {
         guard let client else { throw QuotioHostClientError.disconnected }
         struct Import: Encodable {

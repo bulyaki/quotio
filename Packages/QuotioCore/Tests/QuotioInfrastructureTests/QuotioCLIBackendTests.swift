@@ -60,6 +60,25 @@ final class QuotioCLIBackendTests: XCTestCase {
         }
     }
 
+    func testLegacyGoSourceRegistrationSendsOnlyStableIDsAndRetriesCommittedImports() async throws {
+        let backend = QuotioCLIBackend(session: stubSession())
+        await backend.connect(.init(baseURL: URL(string: "http://127.0.0.1:43210")!, token: "test"))
+        QuotioCLIURLProtocol.enqueue(#"{"id":"operation","status":"completed"}"#)
+        try await backend.importLegacyOpenCodeGoSource(recordID: "record", keyID: "key")
+        let body = try XCTUnwrap(QuotioCLIURLProtocol.body(forPath: "/v2/sources"))
+        let value = try XCTUnwrap(JSONSerialization.jsonObject(with: body) as? [String: Any])
+        XCTAssertEqual(value["kind"] as? String, "quotio_custom_provider")
+        let source = try XCTUnwrap(value["source"] as? [String: String])
+        XCTAssertEqual(source, ["domain": "app.bytrong.quotio", "record_id": "record", "key_id": "key"])
+        QuotioCLIURLProtocol.enqueue(#"{"id":"operation","status":"failed","error":"duplicate_account"}"#)
+        try await backend.importLegacyOpenCodeGoSource(recordID: "record", keyID: "key")
+        QuotioCLIURLProtocol.enqueue(#"{"id":"operation","status":"failed","error":"credential_validation_failed"}"#)
+        do {
+            try await backend.importLegacyOpenCodeGoSource(recordID: "record", keyID: "key")
+            XCTFail("Validation errors must remain retryable migration failures")
+        } catch {}
+    }
+
     func testResolvedMutationsPreserveAccountAndSourceScopesAndExplicitNameReset() async throws {
         let backend = QuotioCLIBackend(session: stubSession())
         await backend.connect(.init(baseURL: URL(string: "http://127.0.0.1:43210")!, token: "test"))

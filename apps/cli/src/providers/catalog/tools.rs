@@ -159,6 +159,7 @@ async fn fetch_opencode_go_at(
         context
             .http
             .get(usage_url)
+            .header("User-Agent", concat!("quotio/", env!("CARGO_PKG_VERSION")))
             .header(
                 "Authorization",
                 crate::providers::http::sensitive(&format!("Bearer {}", key.0))?,
@@ -297,6 +298,7 @@ mod tests {
         assert_eq!(usage.windows[2].quota, Quota::from_used(Some(30.0)));
         let requests = task.await.unwrap();
         assert!(requests[0].starts_with("GET /zen/go/v1/usage "));
+        assert!(requests[0].to_lowercase().contains("user-agent: quotio/"));
         assert!(
             requests[0]
                 .to_lowercase()

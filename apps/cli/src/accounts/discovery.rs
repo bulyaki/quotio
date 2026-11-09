@@ -546,6 +546,39 @@ fn custom_references(
     }
     let mut result = Vec::new();
     for record in records {
+        if provider == Provider::Catalog("opencodego") {
+            if record["is-enabled"] == false
+                || !is_opencode_go_record(
+                    record["type"].as_str().unwrap_or_default(),
+                    record["base-url"].as_str(),
+                )
+            {
+                continue;
+            }
+            let Some(id) = record["id"].as_str() else {
+                continue;
+            };
+            let Some(keys) = record["api-keys"].as_array() else {
+                continue;
+            };
+            if keys.len() > LIMIT {
+                return Err(AccountError::Corrupt);
+            }
+            for key in keys {
+                let Some(key_id) = key["id"].as_str() else {
+                    continue;
+                };
+                let source = CustomProviderReference {
+                    domain: domain.clone(),
+                    record_id: id.into(),
+                    key_id: Some(key_id.into()),
+                };
+                if source.identity().is_ok() {
+                    result.push(Reference::Custom(source, read, provider));
+                }
+            }
+            continue;
+        }
         let kind = match provider {
             Provider::Zai => "glm-api-key",
             Provider::Catalog("clinepass") => "clinepass",
@@ -560,6 +593,7 @@ fn custom_references(
         let source = CustomProviderReference {
             domain: domain.clone(),
             record_id: id.into(),
+            key_id: None,
         };
         if source.identity().is_ok() {
             result.push(Reference::Custom(source, read, provider));
@@ -927,6 +961,64 @@ mod tests {
         }
         std::fs::remove_dir_all(dir).unwrap();
     }
+    #[tokio::test]
+    async fn opencode_go_discovery_returns_one_private_reference_per_saved_key() {
+        fn preferences(_: QuotioDomain) -> Result<Vec<u8>, AccountError> {
+            Ok(br#"[{"id":"11111111-1111-1111-1111-111111111111","type":"openai-compatibility","name":"OpenCode Go","base-url":"https://opencode.ai/zen/go/v1/","api-keys":[{"id":"22222222-2222-2222-2222-222222222222","api-key":"fixture-first"},{"id":"33333333-3333-3333-3333-333333333333","api-key":"fixture-second"}]}]"#.to_vec())
+        }
+        let mut registry = Registry {
+            preferences,
+            ..Default::default()
+        };
+        let request = serde_json::from_value(json!({"provider":"opencodego","kind":"quotio_custom_provider","domain":"production","inspect":true})).unwrap();
+        let discovered = registry.inspect(request).unwrap();
+        let candidates = discovered["candidates"].as_array().unwrap();
+        assert_eq!(candidates.len(), 2);
+        assert!(!discovered.to_string().contains("fixture-first"));
+        assert!(!discovered.to_string().contains("fixture-second"));
+        let mut identities = Vec::new();
+        for candidate in candidates {
+            let reference = registry
+                .get(candidate["source"]["discovery_ref"].as_str().unwrap())
+                .unwrap();
+            identities.push(reference.identity().unwrap());
+            reference.resolve().await.unwrap();
+        }
+        assert_ne!(identities[0], identities[1]);
+        let records =
+            serde_json::from_slice::<Value>(&preferences(QuotioDomain::Production).unwrap())
+                .unwrap();
+        for url in [
+            "https://other.example/zen/go/v1/",
+            "https://opencode.ai/zen/v1/",
+        ] {
+            let mut wrong = records.clone();
+            wrong[0]["base-url"] = url.into();
+            assert!(
+                custom_references(
+                    Provider::Catalog("opencodego"),
+                    QuotioDomain::Production,
+                    &serde_json::to_vec(&wrong).unwrap(),
+                    preferences
+                )
+                .unwrap()
+                .is_empty()
+            );
+        }
+        let mut disabled = records;
+        disabled[0]["is-enabled"] = false.into();
+        assert!(
+            custom_references(
+                Provider::Catalog("opencodego"),
+                QuotioDomain::Production,
+                &serde_json::to_vec(&disabled).unwrap(),
+                preferences
+            )
+            .unwrap()
+            .is_empty()
+        );
+    }
+
     #[tokio::test]
     async fn custom_reference_rejects_provider_rotation_after_inspection() {
         let mut registry = Registry {

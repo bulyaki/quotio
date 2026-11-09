@@ -6,6 +6,38 @@ import XCTest
 @testable import QuotioInfrastructure
 
 final class QuotioCLILegacyAccountMigrationTests: XCTestCase {
+    func testOpenCodeGoMigrationImportsEachKeyRetriesFailuresAndPreservesPreferences() async throws {
+        let suite = UUID().uuidString
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let first = CustomAPIKeyEntry(apiKey: "fixture-first")
+        let second = CustomAPIKeyEntry(apiKey: "fixture-second")
+        let go = CustomProvider(name: "Go", type: .openaiCompatibility,
+            baseURL: "https://opencode.ai/zen/go/v1/", apiKeys: [first, second])
+        let zen = CustomProvider(name: "Go", type: .openaiCompatibility,
+            baseURL: "https://opencode.ai/zen/v1", apiKeys: [first])
+        let disabled = CustomProvider(name: "Disabled", type: .openaiCompatibility,
+            baseURL: go.baseURL, apiKeys: [first], isEnabled: false)
+        try UserDefaultsCustomProviderRepository(defaults: defaults).save([go, zen, disabled])
+        let original = defaults.data(forKey: "customProviders")
+        let destination = GoMigrationDestination()
+        let migration = QuotioCLILegacyAccountMigration(
+            metadataURL: FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString),
+            credentials: MigrationCredentials(), defaults: try XCTUnwrap(UserDefaults(suiteName: suite)),
+            importCustomSource: { record, key in try await destination.save(record: record, key: key) },
+            importAccount: { _, _, _ in XCTFail("No legacy account expected") })
+        let failed = await migration.migrate()
+        XCTAssertEqual(failed.pendingCount, 2)
+        await destination.allowWrites()
+        let success = await migration.migrate()
+        XCTAssertEqual(success.migratedCount, 2)
+        let replay = await migration.migrate()
+        XCTAssertEqual(replay, CredentialMigrationResult())
+        let saved = await destination.saved
+        XCTAssertEqual(Set(saved), Set([first, second].map { go.id.uuidString.lowercased() + "/" + $0.id.uuidString.lowercased() }))
+        XCTAssertEqual(defaults.data(forKey: "customProviders"), original)
+    }
+
     func testNonproductionMigrationDoesNotReadLegacyMetadataOrNativeKeychain() async throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -20,6 +52,7 @@ final class QuotioCLILegacyAccountMigrationTests: XCTestCase {
             let migration = QuotioCLILegacyAccountMigration(
                 metadataURL: url, credentials: MigrationCredentials(), defaults: try XCTUnwrap(UserDefaults(suiteName: suite)),
                 codexKeychain: source, identity: RuntimeIdentity(bundleIdentifier: identifier),
+                importCustomSource: { _, _ in XCTFail("Nonproduction must not import production Go providers") },
                 importAccount: { _, _, _ in XCTFail("Nonproduction must not import production accounts") }
             )
             let result = await migration.migrate()
@@ -203,5 +236,15 @@ private actor CodexMigrationKeychain: ExternalCredentialReading {
         let payload = Data(claims.utf8).base64EncodedString().replacingOccurrences(of: "+", with: "-")
             .replacingOccurrences(of: "/", with: "_").replacingOccurrences(of: "=", with: "")
         return "e30.\(payload).signature"
+    }
+}
+
+private actor GoMigrationDestination {
+    private var writable = false
+    var saved: [String] = []
+    func allowWrites() { writable = true }
+    func save(record: String, key: String) throws {
+        guard writable else { throw AccountServiceFailure.invalidCredential }
+        saved.append(record + "/" + key)
     }
 }
